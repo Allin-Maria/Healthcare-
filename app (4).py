@@ -1,7 +1,10 @@
+import os
+# Auto-install missing dependencies (works on Streamlit Cloud / Replit / Render)
+os.system("pip install matplotlib seaborn fairlearn scikit-learn pandas numpy")
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -14,7 +17,7 @@ from fairlearn.reductions import ExponentiatedGradient, DemographicParity
 
 from sklearn.linear_model import LogisticRegression
 
-# Hardcoded TARGET and SENSITIVE variables based on the notebook context
+# Hardcoded TARGET and SENSITIVE variables
 TARGET = 'heart_disease'
 SENSITIVE = 'sex'
 
@@ -22,149 +25,151 @@ st.set_page_config(layout="wide")
 
 st.title("Fairness Analysis and Mitigation App")
 
-st.markdown("""
-This application allows you to upload a dataset, train a baseline logistic regression model,
-analyze its fairness with respect to a sensitive attribute, and apply fairness mitigation
-techniques using Fairlearn's ExponentiatedGradient algorithm.
+st.markdown(f"""
+Upload a dataset, analyze bias, and apply fairness mitigation.
 
-**Hardcoded Target Variable:** `{}`
-**Hardcoded Sensitive Attribute:** `{}`
-""".format(TARGET, SENSITIVE))
+**Target Column:** `{TARGET}`  
+**Sensitive Attribute:** `{SENSITIVE}`
+""")
 
-st.header("1. Upload your Dataset")
-uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xlsx"])
+# ------------------------------
+# 1. File Upload
+# ------------------------------
+st.header("1. Upload Dataset")
+uploaded_file = st.file_uploader("Choose CSV or Excel file", type=["csv", "xlsx"])
 
 if uploaded_file is not None:
     try:
+        # Read dataset
         if uploaded_file.name.endswith(".csv"):
             df = pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith(".xlsx"):
+        else:
             df = pd.read_excel(uploaded_file)
-        
-        st.success(f"Successfully loaded: {uploaded_file.name}")
-        st.write("Dataset Preview:")
+
+        st.success(f"Loaded dataset: {uploaded_file.name}")
         st.dataframe(df.head())
 
-        # Copy before encoding
         df_original = df.copy()
 
-        st.header("2. Data Preprocessing")
-        st.write(f"Automatically encoding categorical variables (if any) and preparing data for modeling.")
+        # ------------------------------
+        # 2. Preprocessing
+        # ------------------------------
+        st.header("2. Preprocessing")
+        st.write("Encoding categorical columns automatically...")
 
-        # Automatically encode categorical variables
         le = LabelEncoder()
         for col in df.columns:
             if df[col].dtype == "object":
                 df[col] = le.fit_transform(df[col])
-        
-        st.write("Columns in dataset:")
+
+        st.write("Columns detected:")
         st.write(df.columns.tolist())
 
+        # Check mandatory columns
         if TARGET not in df.columns:
-            st.error(f"Error: Target column '{TARGET}' not found in the dataset. Please ensure your dataset has a column named '{TARGET}'.")
-        elif SENSITIVE not in df.columns:
-            st.error(f"Error: Sensitive attribute column '{SENSITIVE}' not found in the dataset. Please ensure your dataset has a column named '{SENSITIVE}'.")
-        else:
-            X = df.drop(columns=[TARGET])
-            y = df[TARGET]
-            A = df[SENSITIVE]  # sensitive attribute
+            st.error(f"ERROR: The dataset does not contain the target column `{TARGET}`.")
+            st.stop()
 
-            X_train, X_test, y_train, y_test, A_train, A_test = train_test_split(
-                X, y, A, test_size=0.2, random_state=42
-            )
-            st.success("Data split into training and testing sets.")
+        if SENSITIVE not in df.columns:
+            st.error(f"ERROR: The dataset does not contain the sensitive attribute `{SENSITIVE}`.")
+            st.stop()
 
-            st.header("3. Baseline Model Training and Evaluation")
-            st.write("Training a Logistic Regression model as a baseline.")
+        X = df.drop(columns=[TARGET])
+        y = df[TARGET]
+        A = df[SENSITIVE]
 
-            model = LogisticRegression(max_iter=2000, solver='liblinear')
-            model.fit(X_train, y_train)
+        X_train, X_test, y_train, y_test, A_train, A_test = train_test_split(
+            X, y, A, test_size=0.2, random_state=42
+        )
 
-            preds = model.predict(X_test)
-            acc = accuracy_score(y_test, preds)
+        # ------------------------------
+        # 3. Baseline Model
+        # ------------------------------
+        st.header("3. Baseline Logistic Regression Model")
 
-            st.write(f"**Baseline Model Accuracy:** {acc:.4f}")
+        model = LogisticRegression(max_iter=2000, solver="liblinear")
+        model.fit(X_train, y_train)
 
-            st.subheader("Fairness Metrics (Baseline Model - Before Mitigation)")
-            mf = MetricFrame(
-                metrics={
-                    "Accuracy": accuracy_score,
-                    "TPR": true_positive_rate,
-                    "FPR": false_positive_rate,
-                    "Selection Rate": selection_rate
-                },
-                y_true=y_test,
-                y_pred=preds,
-                sensitive_features=A_test
-            )
+        preds = model.predict(X_test)
+        acc = accuracy_score(y_test, preds)
+        st.write(f"**Baseline Accuracy:** {acc:.4f}")
 
-            st.dataframe(mf.by_group)
+        # Fairness metrics
+        mf = MetricFrame(
+            metrics={
+                "Accuracy": accuracy_score,
+                "TPR": true_positive_rate,
+                "FPR": false_positive_rate,
+                "Selection Rate": selection_rate
+            },
+            y_true=y_test,
+            y_pred=preds,
+            sensitive_features=A_test
+        )
 
-            st.subheader("Fairness Metrics Visualization (Baseline)")
-            fig_baseline, ax_baseline = plt.subplots(figsize=(10, 6))
-            mf.by_group.plot(kind="bar", ax=ax_baseline)
-            ax_baseline.set_title("Fairness Metrics by Sensitive Attribute (Baseline)")
-            ax_baseline.set_ylabel("Metric Value")
-            ax_baseline.set_xlabel(SENSITIVE)
-            st.pyplot(fig_baseline)
+        st.subheader("Fairness Metrics (Before Mitigation)")
+        st.dataframe(mf.by_group)
 
-            st.header("4. Fairness Mitigation with ExponentiatedGradient")
-            st.write(f"Applying Demographic Parity constraint to mitigate fairness issues concerning '{SENSITIVE}'.")
+        # Plot fairness metrics
+        fig1, ax1 = plt.subplots(figsize=(10, 6))
+        mf.by_group.plot(kind="bar", ax=ax1)
+        ax1.set_title("Fairness Metrics - Baseline")
+        st.pyplot(fig1)
 
-            constraint = DemographicParity()
-            mitigator = ExponentiatedGradient(
-                LogisticRegression(max_iter=2000, solver='liblinear'),
-                constraint
-            )
-            
-            mitigator.fit(X_train, y_train, sensitive_features=A_train)
-            preds_fair = mitigator.predict(X_test)
+        # ------------------------------
+        # 4. Fairness Mitigation
+        # ------------------------------
+        st.header("4. Fairness Mitigation (Demographic Parity)")
 
-            st.subheader("Fairness Metrics (Mitigated Model - After Mitigation)")
-            mf_fair = MetricFrame(
-                metrics={
-                    "Accuracy": accuracy_score,
-                    "TPR": true_positive_rate,
-                    "FPR": false_positive_rate,
-                    "Selection Rate": selection_rate
-                },
-                y_true=y_test,
-                y_pred=preds_fair,
-                sensitive_features=A_test
-            )
+        mitigator = ExponentiatedGradient(
+            LogisticRegression(max_iter=2000, solver="liblinear"),
+            DemographicParity()
+        )
 
-            st.dataframe(mf_fair.by_group)
+        mitigator.fit(X_train, y_train, sensitive_features=A_train)
+        preds_fair = mitigator.predict(X_test)
 
-            st.subheader("Comparison: Before vs. After Mitigation")
-            combined_metrics = pd.concat(
-                [mf.by_group.add_suffix(" (Before)"),
-                 mf_fair.by_group.add_suffix(" (After)")], axis=1
-            )
-            st.dataframe(combined_metrics)
+        mf_fair = MetricFrame(
+            metrics={
+                "Accuracy": accuracy_score,
+                "TPR": true_positive_rate,
+                "FPR": false_positive_rate,
+                "Selection Rate": selection_rate
+            },
+            y_true=y_test,
+            y_pred=preds_fair,
+            sensitive_features=A_test
+        )
 
-            st.subheader("Fairness Metrics Visualization (After Mitigation)")
-            fig_fair, ax_fair = plt.subplots(figsize=(10, 6))
-            mf_fair.by_group.plot(kind="bar", ax=ax_fair)
-            ax_fair.set_title("Fairness Metrics by Sensitive Attribute (After Mitigation)")
-            ax_fair.set_ylabel("Metric Value")
-            ax_fair.set_xlabel(SENSITIVE)
-            st.pyplot(fig_fair)
-            
-            st.header("5. Project Summary")
-            st.write(f"**Dataset shape:** {df_original.shape}")
-            st.write(f"**Target variable:** '{TARGET}'")
-            st.write(f"**Sensitive attribute:** '{SENSITIVE}'")
-            st.write(f"**Baseline Model Accuracy:** {acc:.4f}")
+        st.subheader("Fairness Metrics (After Mitigation)")
+        st.dataframe(mf_fair.by_group)
 
-            st.subheader("Detailed Fairness Comparison")
-            st.markdown("Metrics for baseline model:")
-            st.dataframe(mf.by_group)
-            st.markdown("Metrics for fairness-mitigated model:")
-            st.dataframe(mf_fair.by_group)
+        # Plot fairness after mitigation
+        fig2, ax2 = plt.subplots(figsize=(10, 6))
+        mf_fair.by_group.plot(kind="bar", ax=ax2)
+        ax2.set_title("Fairness Metrics - After Mitigation")
+        st.pyplot(fig2)
 
+        # ------------------------------
+        # 5. Summary
+        # ------------------------------
+        st.header("5. Summary")
+
+        st.write("**Dataset shape:**", df_original.shape)
+        st.write("**Baseline Accuracy:**", acc)
+        st.write("**Sensitive Attribute:**", SENSITIVE)
+
+        st.subheader("Comparison Table: Before vs After Fairness Mitigation")
+        combined = pd.concat(
+            [mf.by_group.add_suffix(" (Before)"),
+             mf_fair.by_group.add_suffix(" (After)")],
+            axis=1
+        )
+        st.dataframe(combined)
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
-        st.write("Please ensure your file is correctly formatted and contains the specified 'TARGET' and 'SENSITIVE' columns.")
 else:
-    st.info("Please upload a CSV or Excel file to get started.")
+    st.info("Upload a dataset to start.")
+
+               
